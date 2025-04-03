@@ -58,3 +58,142 @@ resource "azurerm_databricks_workspace" "databricks" {
   sku                 = "premium"
 }
 
+
+# Virtual Network
+resource "azurerm_virtual_network" "vnet" {
+  name                = "openai-vnet"
+  address_space       = ["10.0.0.0/16"]
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+resource "azurerm_subnet" "subnet" {
+  name                 = "openai-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = ["10.0.1.0/24"]
+}
+
+# Kong API Gateway (Container Instance)
+# Add ACR resource
+resource "azurerm_container_registry" "acr" {
+  name                = "mykongacr"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  sku                 = "Basic"
+  admin_enabled       = true
+}
+
+# Update Kong Container Group to use ACR
+resource "azurerm_container_group" "kong" {
+  name                = "kong-api-gateway"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  ip_address_type     = "Public"
+  dns_name_label      = "kong-api"
+  os_type             = "Linux"
+
+  container {
+    name   = "kong"
+    image  = "mykongacr.azurecr.io/kong:3.6"
+    cpu    = "1.0"
+    memory = "1.5"
+
+    ports {
+      port     = 8000
+      protocol = "TCP"
+    }
+
+    environment_variables = {
+      "KONG_DATABASE"      = "off"
+      "KONG_PROXY_LISTEN"  = "0.0.0.0:8000"
+      "KONG_ADMIN_LISTEN"  = "0.0.0.0:8001"
+    }
+  }
+
+  image_registry_credential {
+    server   = azurerm_container_registry.acr.login_server
+    username = azurerm_container_registry.acr.admin_username
+    password = azurerm_container_registry.acr.admin_password
+  }
+
+  depends_on = [azurerm_container_registry.acr]
+}
+# Public IP for App Gateway
+resource "azurerm_public_ip" "appgw_pip" {
+  name                = "appgw-pip"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+}
+
+# Application Gateway
+resource "azurerm_application_gateway" "appgw" {
+  name                = "openai-appgw"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+
+  sku {
+    name     = "WAF_v2"
+    tier     = "WAF_v2"
+    capacity = 2
+  }
+
+  gateway_ip_configuration {
+    name      = "appgw-ip-config"
+    subnet_id = azurerm_subnet.subnet.id
+  }
+
+  frontend_port {
+    name = "http-port"
+    port = 80
+  }
+
+  ssl_certificate {
+    name = "my-ssl-cert"  # ensure that the certificate is uploaded at azure
+  }
+
+  frontend_ip_configuration {
+    name                 = "frontend-ip"
+    public_ip_address_id = azurerm_public_ip.appgw_pip.id
+  }
+
+  backend_address_pool {
+    name  = "kong-pool"
+    fqdns = [azurerm_container_group.kong.fqdn]
+  }
+
+  backend_http_settings {
+    name                  = "http-settings"
+    cookie_based_affinity = "Disabled"
+    port                  = 8000
+    protocol              = "Http"
+    request_timeout       = 20
+  }
+
+  http_listener {
+    name                           = "http-listener"
+    frontend_ip_configuration_name = "frontend-ip"
+    frontend_port_name             = "http-port"
+    protocol                       = "Http"
+  }
+
+  request_routing_rule {
+    name                       = "rule1"
+    rule_type                  = "Basic"
+    http_listener_name         = "http-listener"
+    backend_address_pool_name  = "kong-pool"
+    backend_http_settings_name = "http-settings"
+  }
+
+  waf_configuration {
+    enabled          = true
+    firewall_mode    = "Prevention"
+    rule_set_type    = "OWASP"
+    rule_set_version = "3.2"
+  }
+}
+
+
+
