@@ -146,8 +146,8 @@ resource "azurerm_application_gateway" "appgw" {
   }
 
   frontend_port {
-    name = "http-port"
-    port = 80
+    name = "https-port"
+    port = 443
   }
 
   ssl_certificate {
@@ -173,16 +173,17 @@ resource "azurerm_application_gateway" "appgw" {
   }
 
   http_listener {
-    name                           = "http-listener"
+    name                           = "https-listener"
     frontend_ip_configuration_name = "frontend-ip"
-    frontend_port_name             = "http-port"
-    protocol                       = "Http"
+    frontend_port_name             = "https-port"
+    protocol                       = "Https"
+    ssl_certificate_name           = "my-ssl-cert"
   }
 
   request_routing_rule {
     name                       = "rule1"
     rule_type                  = "Basic"
-    http_listener_name         = "http-listener"
+    http_listener_name         = "httpa-listener"
     backend_address_pool_name  = "kong-pool"
     backend_http_settings_name = "http-settings"
   }
