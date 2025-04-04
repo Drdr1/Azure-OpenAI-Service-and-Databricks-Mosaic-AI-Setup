@@ -220,3 +220,37 @@ resource "azurerm_monitor_diagnostic_setting" "appgw_diag" {
   }
 }
 
+resource "azurerm_monitor_metric_alert" "quota_alert" {
+  name                = "quota-alert"
+  resource_group_name = azurerm_resource_group.rg.name
+  scopes              = [azurerm_cognitive_account.openai.id]
+  description         = "Alert on high request count"
+
+  criteria {
+    metric_namespace = "Microsoft.CognitiveServices/accounts"
+    metric_name      = "TotalCalls"
+    aggregation      = "Count"
+    operator         = "GreaterThan"
+    threshold        = 100
+  }
+
+  window_size = "PT5M"  # Corrected from time_window
+  action {
+    action_group_id = azurerm_monitor_action_group.notify_team.id
+  }
+
+  frequency   = "PT1M"  # Evaluate every minute
+  severity    = 3       # Medium severity
+}
+
+resource "azurerm_monitor_action_group" "notify_team" {
+  name                = "notify-team"
+  resource_group_name = azurerm_resource_group.rg.name
+  short_name          = "notifyteam"
+
+  email_receiver {
+    name          = "team-email"
+    email_address = "team@domain.com"
+  }
+}
+
