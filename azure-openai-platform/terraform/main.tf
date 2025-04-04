@@ -197,4 +197,26 @@ resource "azurerm_application_gateway" "appgw" {
 }
 
 
+resource "azurerm_log_analytics_workspace" "log_analytics" {
+  name                = "openai-log-analytics"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku                 = "PerGB2018"
+}
+
+resource "azurerm_monitor_diagnostic_setting" "appgw_diag" {
+  name                       = "appgw-diagnostics"
+  target_resource_id         = azurerm_application_gateway.appgw.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.log_analytics.id
+
+  log {
+    category = "ApplicationGatewayAccessLog"
+    enabled  = true
+  }
+
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+  }
+}
 
