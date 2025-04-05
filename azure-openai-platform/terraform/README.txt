@@ -136,3 +136,13 @@ Sixth Milestone: End-to-End Integration Test Environment :
 
 ---------------
 
+
+Testing:
+
+Setup Jest Test Suite
+1. Initialize:
+   ```bash
+   cd /azure-openai-platform/tests
+   npm init -y
+   npm install --save-dev jest axios dotenv
+   ```
