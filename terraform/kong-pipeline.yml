@@ -1,0 +1,70 @@
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Use pipeline variables instead of hardcoded values
+  - group: openai-variables # Variable group linked to Key Vault
+  - name: resource_group_name
+    value: 'openai-rg'
+  - name: terraform_working_dir
+    value: '$(System.DefaultWorkingDirectory)'
+
+# Configure OIDC authentication
+resources:
+  repositories:
+    - repository: self
+      trigger:
+        branches:
+          include:
+            - main
+
+steps:
+# Install Terraform
+- task: TerraformInstaller@0
+  displayName: 'Install Terraform'
+  inputs:
+    terraformVersion: 'latest'
+
+# Initialize Terraform with OIDC authentication
+- task: TerraformTaskV4@4
+  displayName: 'Terraform Init'
+  inputs:
+    provider: 'azurerm'
+    command: 'init'
+    workingDirectory: '$(terraform_working_dir)'
+    backendServiceArm: 'azure-oidc-connection' # OIDC-based service connection
+    backendAzureRmResourceGroupName: '$(resource_group_name)'
+    backendAzureRmStorageAccountName: 'tfstate-storage'
+    backendAzureRmContainerName: 'tfstate'
+    backendAzureRmKey: 'kong.tfstate'
+
+# Validate Terraform configuration
+- task: TerraformTaskV4@4
+  displayName: 'Terraform Validate'
+  inputs:
+    provider: 'azurerm'
+    command: 'validate'
+    workingDirectory: '$(terraform_working_dir)'
+
+# Plan Terraform changes
+- task: TerraformTaskV4@4
+  displayName: 'Terraform Plan'
+  inputs:
+    provider: 'azurerm'
+    command: 'plan'
+    workingDirectory: '$(terraform_working_dir)'
+    environmentServiceNameAzureRM: 'azure-oidc-connection' # OIDC-based service connection
+    commandOptions: '-var-file="$(terraform_working_dir)/environments/$(Environment)/terraform.tfvars"'
+
+# Apply Terraform changes with OIDC authentication
+- task: TerraformTaskV4@4
+  displayName: 'Terraform Apply'
+  inputs:
+    provider: 'azurerm'
+    command: 'apply'
+    workingDirectory: '$(terraform_working_dir)'
+    environmentServiceNameAzureRM: 'azure-oidc-connection' # OIDC-based service connection
+    commandOptions: '-var-file="$(terraform_working_dir)/environments/$(Environment)/terraform.tfvars" -auto-approve'
