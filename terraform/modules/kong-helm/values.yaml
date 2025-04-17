@@ -1,0 +1,76 @@
+# Kong Helm Chart values
+replicaCount: ${replica_count}
+
+image:
+  repository: ${image_repository}
+  tag: ${image_tag}
+  pullPolicy: IfNotPresent
+
+# Kong configurations
+kong:
+  dbless: true
+  logLevel: notice
+
+# Admin API Service
+admin:
+  enabled: true
+  type: ClusterIP
+  annotations: {}
+  http:
+    enabled: true
+    servicePort: 8001
+    containerPort: 8001
+
+# Kong Proxy Service
+proxy:
+  enabled: true
+  type: ${service_type}
+  annotations: {}
+  http:
+    enabled: true
+    servicePort: 80
+    containerPort: 8000
+  tls:
+    enabled: true
+    servicePort: 443
+    containerPort: 8443
+
+# Kong Ingress Controller
+ingressController:
+  enabled: true
+  installCRDs: false
+
+# Resources
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# Pod annotations
+podAnnotations: {}
+
+# Additional environment variables
+env:
+  database: "off"
+
+# Default deployment Pod security context
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Network policy
+networkPolicy:
+  enabled: false
+
+# Service monitor for Prometheus
+serviceMonitor:
+  enabled: false
+
+# Ingress for Kong Admin API
+ingress:
+  admin:
+    enabled: false

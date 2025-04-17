@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OpenAI Mock Service</title>
+</head>
+<body>
+  <h1>OpenAI Mock Service</h1>
+  <p>This is a mock service for OpenAI.</p>
+</body>
+</html>

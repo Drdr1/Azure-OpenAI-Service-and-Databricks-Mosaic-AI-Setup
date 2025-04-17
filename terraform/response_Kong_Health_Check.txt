@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Kong Health Check</title>
+</head>
+<body>
+  <h1>Kong is healthy!</h1>
+</body>
+</html>
