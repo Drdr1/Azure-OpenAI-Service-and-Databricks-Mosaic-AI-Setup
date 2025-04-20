@@ -18,7 +18,7 @@ stages:
           # Step 1: Install Terraform manually
           - task: AzureCLI@2
             inputs:
-              azureSubscription: '<your-service-connection-name>'
+              azureSubscription: 'service-con'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               inlineScript: |
@@ -35,7 +35,7 @@ stages:
           # Step 2: Initialize Terraform with Azure backend
           - task: AzureCLI@2
             inputs:
-              azureSubscription: '<your-service-connection-name>'
+              azureSubscription: 'service-con'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               inlineScript: |
