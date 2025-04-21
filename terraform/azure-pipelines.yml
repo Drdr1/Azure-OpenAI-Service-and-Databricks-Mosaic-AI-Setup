@@ -6,6 +6,18 @@ trigger:
     include:
       - terraform/*
 
+variables:
+  # Define variables or reference a variable group
+  - group: terraform-secrets  
+  - name: SUBSCRIPTION_ID
+    value: '955faad9-ebe9-4a85-9974-acae429ae877'
+  - name: TF_BACKEND_RG
+    value: 'dev-openai-rg'
+  - name: TF_BACKEND_SA
+    value: 'devtfstatezved9d'
+  - name: TF_BACKEND_CONTAINER
+    value: 'tfstate'
+
 stages:
   - stage: Terraform_Deploy
     displayName: 'Deploy Terraform Infrastructure'
@@ -24,56 +36,73 @@ stages:
               inlineScript: |
                 # Install unzip dependency
                 sudo apt-get update && sudo apt-get install -y unzip
-                # Download Terraform 1.5.7 (adjust version as needed)
+                # Download Terraform 1.5.7
                 curl -fsSL https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip -o terraform.zip
                 unzip terraform.zip
                 sudo mv terraform /usr/local/bin/
                 # Verify installation
                 terraform --version
             displayName: 'Install Terraform'
-
+          
           # Step 2: Initialize Terraform with Azure backend
           - task: AzureCLI@2
             inputs:
               azureSubscription: 'service-con'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
               inlineScript: |
-                # Log in to Azure using service principal
-                az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
-                # Set the subscription
-                az account set --subscription "955faad9-ebe9-4a85-9974-acae429ae877"
+                # Set environment variables for Terraform
+                export ARM_CLIENT_ID=$(ARM_CLIENT_ID)
+                export ARM_CLIENT_SECRET=$(ARM_CLIENT_SECRET)
+                export ARM_TENANT_ID=$(ARM_TENANT_ID)
+                export ARM_SUBSCRIPTION_ID=$(SUBSCRIPTION_ID)
+                
                 # Initialize Terraform with backend configuration
                 terraform init \
-                  -backend-config="resource_group_name=dev-openai-rg" \
-                  -backend-config="storage_account_name=devtfstatezved9d" \
-                  -backend-config="container_name=tfstate" \
+                  -backend-config="resource_group_name=$(TF_BACKEND_RG)" \
+                  -backend-config="storage_account_name=$(TF_BACKEND_SA)" \
+                  -backend-config="container_name=$(TF_BACKEND_CONTAINER)" \
                   -backend-config="key=terraform.tfstate"
             displayName: 'Terraform Init'
-
+          
           # Step 3: Generate Terraform plan
           - task: AzureCLI@2
             inputs:
-              azureSubscription: '<your-service-connection-name>'
+              azureSubscription: 'service-con'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
               inlineScript: |
+                # Set environment variables for Terraform
+                export ARM_CLIENT_ID=$(ARM_CLIENT_ID)
+                export ARM_CLIENT_SECRET=$(ARM_CLIENT_SECRET)
+                export ARM_TENANT_ID=$(ARM_TENANT_ID)
+                export ARM_SUBSCRIPTION_ID=$(SUBSCRIPTION_ID)
+                
                 # Create a Terraform plan
-                terraform plan -out=tfplan \
-                  -var="client_id=$ARM_CLIENT_ID" \
-                  -var="client_secret=$ARM_CLIENT_SECRET" \
-                  -var="tenant_id=$ARM_TENANT_ID" \
-                  -var="subscription_id=955faad9-ebe9-4a85-9974-acae429ae877"
+                terraform plan -out=tfplan
+                
+                # Optionally, save the plan as an artifact
+                echo "##vso[task.uploadsummary]terraform-plan.txt"
+                terraform show -no-color tfplan > terraform-plan.txt
             displayName: 'Terraform Plan'
-
+          
           # Step 4: Apply Terraform plan (only on main branch)
           - task: AzureCLI@2
             condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
             inputs:
-              azureSubscription: '<your-service-connection-name>'
+              azureSubscription: 'service-con'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
               inlineScript: |
+                # Set environment variables for Terraform
+                export ARM_CLIENT_ID=$(ARM_CLIENT_ID)
+                export ARM_CLIENT_SECRET=$(ARM_CLIENT_SECRET)
+                export ARM_TENANT_ID=$(ARM_TENANT_ID)
+                export ARM_SUBSCRIPTION_ID=$(SUBSCRIPTION_ID)
+                
                 # Apply the Terraform plan
                 terraform apply -auto-approve tfplan
             displayName: 'Terraform Apply'
