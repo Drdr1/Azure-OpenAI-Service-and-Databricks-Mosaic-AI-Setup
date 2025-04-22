@@ -1,0 +1,385 @@
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - terraform/**
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Validate
+  jobs:
+  - job: ValidateTerraform
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.9'
+        addToPath: true
+    
+    - task: AzureCLI@2
+      displayName: 'Install Terraform'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt update && sudo apt install terraform
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Init'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          cd $(System.DefaultWorkingDirectory)/terraform
+          terraform init \
+            -backend-config="storage_account_name=devtfstatejubwex" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=terraform.tfstate"
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Validate'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          cd $(System.DefaultWorkingDirectory)/terraform
+          terraform validate
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Plan'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          cd $(System.DefaultWorkingDirectory)/terraform
+          terraform plan -out=tfplan
+
+    - publish: $(System.DefaultWorkingDirectory)/terraform/tfplan
+      artifact: TerraformPlan
+
+- stage: Deploy
+  dependsOn: Validate
+  condition: succeeded('Validate')
+  jobs:
+  - deployment: DeployTerraform
+    environment: 'Development'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureCLI@2
+            displayName: 'Install Terraform'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                sudo apt update && sudo apt install terraform
+
+          - download: current
+            artifact: TerraformPlan
+          
+          - task: AzureCLI@2
+            displayName: 'Terraform Init'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd $(System.DefaultWorkingDirectory)/terraform
+                terraform init \
+                  -backend-config="storage_account_name=devtfstatejubwex" \
+                  -backend-config="container_name=tfstate" \
+                  -backend-config="key=terraform.tfstate"
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Apply'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd $(System.DefaultWorkingDirectory)/terraform
+                terraform apply -auto-approve $(Pipeline.Workspace)/TerraformPlan/tfplan
+
+- stage: Verify
+  dependsOn: Deploy
+  condition: succeeded('Deploy')
+  jobs:
+  - job: VerifyInfrastructure
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Get AKS credentials'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az aks get-credentials --resource-group dev-openai-rg --name dev-kong-aks --overwrite-existing
+
+    - task: AzureCLI@2
+      displayName: 'Verify Kong Deployment'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Check Kong services
+          echo "Checking Kong services..."
+          kubectl get svc -n kong
+          
+          # Check Kong pods
+          echo "Checking Kong pods..."
+          kubectl get pods -n kong
+          
+          # Verify Kong proxy is accessible
+          KONG_EXTERNAL_IP=$(kubectl get svc dev-kong-kong-proxy -n kong -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "Kong Proxy External IP: $KONG_EXTERNAL_IP"
+          
+          # Wait for load balancer to be fully provisioned
+          echo "Waiting for Kong proxy to be accessible..."
+          timeout=300
+          elapsed=0
+          while [ $elapsed -lt $timeout ]; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" http://$KONG_EXTERNAL_IP || echo "000")
+            if [ "$response" != "000" ]; then
+              echo "Kong proxy is accessible!"
+              break
+            fi
+            sleep 5
+            elapsed=$((elapsed+5))
+            echo "Still waiting... ($elapsed seconds elapsed)"
+          done
+          
+          if [ $elapsed -ge $timeout ]; then
+            echo "❌ Timed out waiting for Kong proxy to be accessible"
+            exit 1
+          fi
+
+    - task: AzureCLI@2
+      displayName: 'Configure Kong Routes'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Deploy test route
+          cat <<EOF | kubectl apply -n kong -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: demo
+            annotations:
+              konghq.com/strip-path: "true"
+          spec:
+            ingressClassName: kong
+            rules:
+            - http:
+                paths:
+                - path: /test
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: httpbin
+                      port:
+                        number: 80
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: httpbin
+          spec:
+            ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+            selector:
+              app: httpbin
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: httpbin
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: httpbin
+            template:
+              metadata:
+                labels:
+                  app: httpbin
+              spec:
+                containers:
+                - name: httpbin
+                  image: kennethreitz/httpbin
+                  ports:
+                  - containerPort: 80
+          EOF
+          
+          # Wait for deployment to be ready
+          kubectl rollout status deployment/httpbin -n kong
+          
+          # Get Kong Proxy IP
+          export KONG_IP=$(kubectl get svc dev-kong-kong-proxy -n kong -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          
+          # Verify route works
+          echo "Testing Kong route: http://$KONG_IP/test/get"
+          curl -s http://$KONG_IP/test/get | grep "X-Kong-Request-Id"
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Kong route test successful"
+          else
+            echo "❌ Kong route test failed"
+            exit 1
+          fi
+
+    - task: AzureCLI@2
+      displayName: 'Verify OpenAI Service'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Get OpenAI endpoint
+          echo "Checking OpenAI service..."
+          OPENAI_ENDPOINT=$(az cognitiveservices account show \
+            --name openai-vf5u92 \
+            --resource-group dev-openai-rg \
+            --query "properties.endpoint" -o tsv)
+          
+          echo "OpenAI Endpoint: $OPENAI_ENDPOINT"
+          
+          # Verify key exists
+          echo "Verifying OpenAI keys..."
+          key_count=$(az cognitiveservices account keys list \
+            --name openai-vf5u92 \
+            --resource-group dev-openai-rg \
+            --query "[key1, key2]" -o tsv | wc -l)
+          
+          if [ $key_count -eq 2 ]; then
+            echo "✅ OpenAI keys verified"
+          else
+            echo "❌ OpenAI keys verification failed"
+            exit 1
+          fi
+
+    - task: AzureCLI@2
+      displayName: 'Verify Databricks Workspace'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Check Databricks workspace
+          echo "Checking Databricks workspace..."
+          workspace_status=$(az databricks workspace show \
+            --resource-group dev-openai-rg \
+            --workspace-name $(az databricks workspace list \
+              --resource-group dev-openai-rg \
+              --query "[0].name" -o tsv) \
+            --query "provisioningState" -o tsv)
+          
+          if [ "$workspace_status" == "Succeeded" ]; then
+            echo "✅ Databricks workspace is properly provisioned"
+          else
+            echo "❌ Databricks workspace status: $workspace_status"
+            exit 1
+          fi
+
+- stage: DocumentOutputs
+  dependsOn: Verify
+  condition: succeeded('Verify')
+  jobs:
+  - job: GenerateDocumentation
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Generate Infrastructure Documentation'
+      inputs:
+        azureSubscription: 'Azure-Service-Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          cd $(System.DefaultWorkingDirectory)/terraform
+          
+          # Extract key outputs
+          echo "# Infrastructure Deployment Summary" > deployment-summary.md
+          echo "Generated on: $(date)" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          echo "## Key Resources" >> deployment-summary.md
+          
+          # Get resource list
+          echo "### Resource Group" >> deployment-summary.md
+          RG_NAME=$(terraform output -raw resource_group_name)
+          echo "- Name: $RG_NAME" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "### Azure Kubernetes Service" >> deployment-summary.md
+          AKS_NAME=$(terraform output -raw aks_name)
+          echo "- Name: $AKS_NAME" >> deployment-summary.md
+          echo "- Node Resource Group: $(terraform output -raw aks_node_resource_group)" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "### Container Registry" >> deployment-summary.md
+          echo "- Name: $(terraform output -raw acr_name)" >> deployment-summary.md
+          echo "- Login Server: $(terraform output -raw acr_login_server)" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "### OpenAI Service" >> deployment-summary.md
+          echo "- Endpoint: $(terraform output -raw openai_endpoint)" >> deployment-summary.md
+          echo "- Service Name: $(terraform output -raw openai_service_name)" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "### Databricks" >> deployment-summary.md
+          echo "- Workspace URL: $(terraform output -raw databricks_workspace_url)" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "### Kong API Gateway" >> deployment-summary.md
+          echo "- Service Name: $(terraform output -raw kong_service_name)" >> deployment-summary.md
+          echo "- Status: $(terraform output -raw kong_status)" >> deployment-summary.md
+          echo "- Namespace: $(terraform output -raw kong_namespace)" >> deployment-summary.md
+          
+          # Get Kong IP
+          KONG_IP=$(az aks command invoke \
+            --resource-group $RG_NAME \
+            --name $AKS_NAME \
+            --command "kubectl get svc $(terraform output -raw kong_service_name) -n $(terraform output -raw kong_namespace) -o jsonpath='{.status.loadBalancer.ingress[0].ip}'" \
+            --query "command.result" -o tsv 2>/dev/null) || echo "Could not fetch IP"
+          
+          echo "- External IP: $KONG_IP" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "### Key Vault" >> deployment-summary.md
+          echo "- Name: $(terraform output -raw key_vault_name)" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "### Application Gateway" >> deployment-summary.md
+          APP_GW_IP=$(terraform output -json appgw_public_ip | jq -r '.ip_address')
+          echo "- Public IP: $APP_GW_IP" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "## Access Information" >> deployment-summary.md
+          echo "- OpenAI Endpoint: $(terraform output -raw openai_endpoint)" >> deployment-summary.md
+          echo "- Databricks Workspace: https://$(terraform output -raw databricks_workspace_url)" >> deployment-summary.md
+          echo "- Kong API Gateway: http://$KONG_IP" >> deployment-summary.md
+          echo "- Kong Test Endpoint: http://$KONG_IP/test/get" >> deployment-summary.md
+          
+          # Upload summary as artifact
+          echo "## Generated documentation"
+          cat deployment-summary.md
+
+    - publish: $(System.DefaultWorkingDirectory)/terraform/deployment-summary.md
+      artifact: DeploymentSummary
+      displayName: 'Publish Deployment Summary'

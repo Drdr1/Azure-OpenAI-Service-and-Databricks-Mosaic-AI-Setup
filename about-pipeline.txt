@@ -1,0 +1,21 @@
+Azure DevOps pipeline for your OpenAI Platform with Kong. I've organized it into four stages:
+
+1- Validate Stage: Initializes Terraform, validates your configuration, and creates a plan
+2- Deploy Stage: Applies the Terraform plan to deploy your infrastructure
+3- Verify Stage: Confirms your infrastructure is working correctly, including:
+
+- Verifying Kong deployment and configuring test routes
+- Checking OpenAI service and keys
+- Verifying Databricks workspace status
+
+
+4- DocumentOutputs Stage: Generates documentation with key information about your deployed resources
+
+The pipeline includes comprehensive verification steps to ensure everything is working correctly after deployment. It also creates a detailed deployment summary document that's published as an artifact.
+To use this pipeline, you'll need to:
+
+1- Create an Azure DevOps service connection named 'Azure-Service-Connection' with permissions to your Azure subscription
+2- Create an environment named 'Development' in Azure DevOps (under Pipelines > Environments)
+3- Save this YAML file in your repository as 'azure-pipelines.yml'
+
+- The pipeline will automatically trigger when changes are made to files in the terraform directory on the main branch.
